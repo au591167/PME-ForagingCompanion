@@ -2,11 +2,20 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Alert, Modal, TouchableOpacity, TextInput } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { FontAwesome } from '@expo/vector-icons';
-
 import MapView, { Marker, Callout, LatLng, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { globalStyles } from '../styles/globalStyles';
-import { Marker as MarkerType, getAllMarkers, saveMarker, deleteMarker } from '../database';
+import { Marker as MarkerType, getAllMarkers, saveMarker, deleteMarker, saveForagingSession } from '../database';
+import { 
+  subscribeToAccelerometer, 
+  startForagingSession, 
+  stopForagingSession, 
+  getCurrentSessionData,
+  isSessionActive,
+  formatDuration,
+  formatDistance,
+  ActivityType 
+} from '../services/accelerometerService';
 
 interface LocationCoords {
   latitude: number;
@@ -29,6 +38,11 @@ const MapScreen: React.FC = () => {
     const [showAddModal, setShowAddModal] = useState(false);
     const [markerName, setMarkerName] = useState('');
     const [selectedCoordinate, setSelectedCoordinate] = useState<LocationCoords | null>(null);
+    const [stepCount, setStepCount] = useState(0);
+    const [currentActivity, setCurrentActivity] = useState<ActivityType>(ActivityType.STANDING);
+    const [sessionActive, setSessionActive] = useState(false);
+    const [sessionData, setSessionData] = useState<any>(null);
+    const accelerometerSubscription = useRef<any>(null);
 
   useEffect(() => {
     (async () => {
@@ -60,8 +74,88 @@ const MapScreen: React.FC = () => {
       // Load markers from database
       const loadedMarkers = getAllMarkers();
       setMarkers(loadedMarkers);
+
+      // Start accelerometer
+      accelerometerSubscription.current = subscribeToAccelerometer(
+        handleShake,
+        handleStep,
+        handleActivityChange
+      );
     })();
+
+    return () => {
+      // Cleanup accelerometer subscription
+      if (accelerometerSubscription.current) {
+        accelerometerSubscription.current.remove();
+      }
+    };
   }, []);
+
+  useEffect(() => {
+    // Update session data every second when active
+    if (sessionActive) {
+      const interval = setInterval(() => {
+        const data = getCurrentSessionData();
+        setSessionData(data);
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [sessionActive]);
+
+  const handleShake = () => {
+    if (currentLocation) {
+      Alert.alert(
+        '📍 Shake Detected!',
+        'Quick mark this location?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Mark', onPress: () => quickMarkLocation() }
+        ]
+      );
+    }
+  };
+
+  const handleStep = (steps: number) => {
+    setStepCount(steps);
+  };
+
+  const handleActivityChange = (activity: ActivityType) => {
+    setCurrentActivity(activity);
+  };
+
+  const quickMarkLocation = () => {
+    if (currentLocation) {
+      setSelectedCoordinate(currentLocation);
+      setMarkerName(`Quick Mark ${new Date().toLocaleTimeString()}`);
+      setShowAddModal(true);
+    }
+  };
+
+  const toggleSession = () => {
+    if (sessionActive) {
+      // Stop session
+      const data = stopForagingSession();
+      if (data) {
+        // Add endTime to match ForagingSession interface
+        const sessionToSave = {
+          ...data,
+          endTime: Date.now(),
+        };
+        saveForagingSession(sessionToSave);
+        Alert.alert(
+          'Session Ended',
+          `Steps: ${data.steps}\nDistance: ${formatDistance(data.distance)}\nCalories: ${data.calories}\nDuration: ${formatDuration(data.duration)}`
+        );
+      }
+      setSessionActive(false);
+      setSessionData(null);
+    } else {
+      // Start session
+      startForagingSession();
+      setSessionActive(true);
+      Alert.alert('Session Started', 'Your foraging trip is now being tracked!');
+    }
+  };
 
   const centerOnCurrentLocation = () => {
     if (currentLocation) {
@@ -210,6 +304,52 @@ const MapScreen: React.FC = () => {
         <FontAwesome name="arrow-left" size={24} color="black" />
       </TouchableOpacity>
 
+      {/* Activity Tracker Card */}
+      <View style={styles.activityCard}>
+        <View style={styles.activityHeader}>
+          <FontAwesome name="heartbeat" size={20} color="#4CAF50" />
+          <Text style={styles.activityTitle}>Activity Tracker</Text>
+          <TouchableOpacity 
+            style={[styles.sessionButton, { backgroundColor: sessionActive ? '#f44336' : '#4CAF50' }]}
+            onPress={toggleSession}
+          >
+            <Text style={styles.sessionButtonText}>
+              {sessionActive ? 'Stop' : 'Start'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.activityStats}>
+          <View style={styles.statBox}>
+            <FontAwesome name="street-view" size={16} color="#666" />
+            <Text style={styles.statValue}>{sessionData?.steps || stepCount}</Text>
+            <Text style={styles.statLabel}>Steps</Text>
+          </View>
+          <View style={styles.statBox}>
+            <FontAwesome name="road" size={16} color="#666" />
+            <Text style={styles.statValue}>
+              {sessionData ? formatDistance(sessionData.distance) : '0 m'}
+            </Text>
+            <Text style={styles.statLabel}>Distance</Text>
+          </View>
+          <View style={styles.statBox}>
+            <FontAwesome name="fire" size={16} color="#666" />
+            <Text style={styles.statValue}>{sessionData?.calories || 0}</Text>
+            <Text style={styles.statLabel}>Calories</Text>
+          </View>
+          <View style={styles.statBox}>
+            <FontAwesome name="clock-o" size={16} color="#666" />
+            <Text style={styles.statValue}>
+              {sessionData ? formatDuration(sessionData.duration) : '0s'}
+            </Text>
+            <Text style={styles.statLabel}>Time</Text>
+          </View>
+        </View>
+        <Text style={styles.activityStatus}>
+          Activity: {currentActivity} {sessionActive && '🟢'}
+        </Text>
+        <Text style={styles.shakeHint}>💡 Shake phone to quick-mark location!</Text>
+      </View>
+
       {/* Search Bar */}
       <View style={styles.searchContainer}>
         <TextInput
@@ -311,9 +451,77 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 5,
   },
-  searchContainer: {
+  activityCard: {
     position: 'absolute',
     top: 100,
+    left: 10,
+    right: 10,
+    zIndex: 1,
+    backgroundColor: 'white',
+    borderRadius: 10,
+    padding: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  activityHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 8,
+  },
+  activityTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  sessionButton: {
+    paddingHorizontal: 15,
+    paddingVertical: 6,
+    borderRadius: 15,
+  },
+  sessionButtonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
+  activityStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  statBox: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  statValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#333',
+    marginTop: 4,
+  },
+  statLabel: {
+    fontSize: 10,
+    color: '#666',
+  },
+  activityStatus: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  shakeHint: {
+    fontSize: 11,
+    color: '#4CAF50',
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
+  searchContainer: {
+    position: 'absolute',
+    top: 260,
     left: 20,
     right: 20,
     zIndex: 1,

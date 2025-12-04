@@ -20,6 +20,16 @@ export interface Marker {
   icon: string;
 }
 
+export interface ForagingSession {
+  id?: number;
+  startTime: number;
+  endTime: number;
+  steps: number;
+  distance: number;
+  calories: number;
+  duration: number;
+}
+
 export const initDatabase = () => {
   db.execSync(`
     CREATE TABLE IF NOT EXISTS plants (
@@ -39,6 +49,17 @@ export const initDatabase = () => {
       longitude REAL NOT NULL,
       name TEXT NOT NULL,
       icon TEXT NOT NULL
+    );
+  `);
+  db.execSync(`
+    CREATE TABLE IF NOT EXISTS foraging_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      startTime INTEGER NOT NULL,
+      endTime INTEGER NOT NULL,
+      steps INTEGER NOT NULL,
+      distance REAL NOT NULL,
+      calories REAL NOT NULL,
+      duration INTEGER NOT NULL
     );
   `);
 };
@@ -75,4 +96,21 @@ export const getAllMarkers = (): Marker[] => {
 
 export const deleteMarker = (id: number) => {
   db.runSync('DELETE FROM markers WHERE id = ?', [id]);
+};
+
+export const saveForagingSession = (session: Omit<ForagingSession, 'id'>) => {
+  const result = db.runSync(
+    'INSERT INTO foraging_sessions (startTime, endTime, steps, distance, calories, duration) VALUES (?, ?, ?, ?, ?, ?)',
+    [session.startTime, session.endTime, session.steps, session.distance, session.calories, session.duration]
+  );
+  return result.lastInsertRowId;
+};
+
+export const getAllForagingSessions = (): ForagingSession[] => {
+  const result = db.getAllSync('SELECT * FROM foraging_sessions ORDER BY startTime DESC');
+  return result as ForagingSession[];
+};
+
+export const deleteForagingSession = (id: number) => {
+  db.runSync('DELETE FROM foraging_sessions WHERE id = ?', [id]);
 };
